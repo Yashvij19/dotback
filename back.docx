@@ -1,0 +1,790 @@
+// User.cs
+public class User
+{
+    public int UserId { get; set; }
+    public string Name { get; set; }
+    public string Email { get; set; }
+    public string Password { get; set; } // Should be hashed in production
+    public bool IsAdmin { get; set; }
+    public int? LobId { get; set; }
+    
+    // Navigation properties
+    public virtual Lob Lob { get; set; }
+    public virtual Admin Admin { get; set; }
+}
+
+// Admin.cs
+public class Admin
+{
+    public int AdminId { get; set; }
+    public int UserId { get; set; }
+    public string Role { get; set; }
+    public int? SmeId { get; set; }
+    
+    // Navigation properties
+    public virtual User User { get; set; }
+    public virtual Sme Sme { get; set; }
+}
+
+// Lob.cs (Line of Business)
+public class Lob
+{
+    public int LobId { get; set; }
+    public string DepartmentName { get; set; }
+    public string Description { get; set; }
+    
+    // Navigation properties
+    public virtual ICollection<User> Users { get; set; }
+}
+
+// Sme.cs (Subject Matter Expert)
+public class Sme
+{
+    public int SmeId { get; set; }
+    public int AdminId { get; set; }
+    public string Specialty { get; set; }
+    
+    // Navigation properties
+    public virtual Admin Admin { get; set; }
+}
+
+-------------------------------------------------------------------
+
+
+using Microsoft.EntityFrameworkCore;
+
+namespace YourNamespace.Data
+{
+    public class AppDbContext : DbContext
+    {
+        public AppDbContext(DbContextOptions<AppDbContext> options) : base(options)
+        {
+        }
+
+        public DbSet<User> Users { get; set; }
+        public DbSet<Admin> Admins { get; set; }
+        public DbSet<Lob> Lobs { get; set; }
+        public DbSet<Sme> Smes { get; set; }
+
+        protected override void OnModelCreating(ModelBuilder modelBuilder)
+        {
+            // Configure User entity
+            modelBuilder.Entity<User>(entity =>
+            {
+                entity.HasKey(e => e.UserId);
+                entity.Property(e => e.UserId).UseIdentityColumn();
+                entity.Property(e => e.Name).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.Email).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.Password).IsRequired();
+                entity.Property(e => e.IsAdmin).HasDefaultValue(false);
+
+                // User to Lob relationship (Many-to-One)
+                entity.HasOne(u => u.Lob)
+                    .WithMany(l => l.Users)
+                    .HasForeignKey(u => u.LobId)
+                    .OnDelete(DeleteBehavior.SetNull);
+            });
+
+            // Configure Admin entity
+            modelBuilder.Entity<Admin>(entity =>
+            {
+                entity.HasKey(e => e.AdminId);
+                entity.Property(e => e.AdminId).UseIdentityColumn();
+                entity.Property(e => e.Role).IsRequired().HasMaxLength(50);
+
+                // Admin to User relationship (One-to-One)
+                entity.HasOne(a => a.User)
+                    .WithOne(u => u.Admin)
+                    .HasForeignKey<Admin>(a => a.UserId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            // Configure Lob entity
+            modelBuilder.Entity<Lob>(entity =>
+            {
+                entity.HasKey(e => e.LobId);
+                entity.Property(e => e.LobId).UseIdentityColumn();
+                entity.Property(e => e.DepartmentName).IsRequired().HasMaxLength(100);
+                entity.Property(e => e.Description).HasMaxLength(500);
+            });
+
+            // Configure Sme entity
+            modelBuilder.Entity<Sme>(entity =>
+            {
+                entity.HasKey(e => e.SmeId);
+                entity.Property(e => e.SmeId).UseIdentityColumn();
+                entity.Property(e => e.Specialty).IsRequired().HasMaxLength(100);
+
+                // Sme to Admin relationship (One-to-One)
+                entity.HasOne(s => s.Admin)
+                    .WithOne(a => a.Sme)
+                    .HasForeignKey<Sme>(s => s.AdminId)
+                    .OnDelete(DeleteBehavior.Cascade);
+            });
+        }
+    }
+}
+
+------------------------------------------------------------------------------
+
+
+using Microsoft.EntityFrameworkCore;
+using UserManagementApi.Data;
+using UserManagementApi.Services;
+
+var builder = WebApplication.CreateBuilder(args);
+
+// Add services to the container
+builder.Services.AddControllers();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+
+// Add DbContext
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseSqlServer(builder.Configuration.GetConnectionString("DefaultConnection")));
+
+// Register services
+builder.Services.AddScoped<IUserService, UserService>();
+builder.Services.AddScoped<IAdminService, AdminService>();
+builder.Services.AddScoped<ILobService, LobService>();
+builder.Services.AddScoped<ISmeService, SmeService>();
+
+var app = builder.Build();
+
+// Configure the HTTP request pipeline
+if (app.Environment.IsDevelopment())
+{
+    app.UseSwagger();
+    app.UseSwaggerUI();
+}
+
+app.UseHttpsRedirection();
+app.UseAuthorization();
+app.MapControllers();
+
+app.Run();
+
+
+------------------------------------------------------------------
+
+
+// Services/IUserService.cs
+using UserManagementApi.Models;
+
+namespace UserManagementApi.Services
+{
+    public interface IUserService
+    {
+        Task<IEnumerable<User>> GetAllUsersAsync();
+        Task<User> GetUserByIdAsync(int id);
+        Task<User> CreateUserAsync(User user);
+        Task<User> UpdateUserAsync(User user);
+        Task<bool> DeleteUserAsync(int id);
+        Task<IEnumerable<User>> GetUsersByLobIdAsync(int lobId);
+    }
+}
+
+// Services/UserService.cs
+using Microsoft.EntityFrameworkCore;
+using UserManagementApi.Data;
+using UserManagementApi.Models;
+
+namespace UserManagementApi.Services
+{
+    public class UserService : IUserService
+    {
+        private readonly AppDbContext _context;
+
+        public UserService(AppDbContext context)
+        {
+            _context = context;
+        }
+
+        public async Task<IEnumerable<User>> GetAllUsersAsync()
+        {
+            return await _context.Users.Include(u => u.Lob).ToListAsync();
+        }
+
+        public async Task<User> GetUserByIdAsync(int id)
+        {
+            return await _context.Users
+                .Include(u => u.Lob)
+                .Include(u => u.Admin)
+                .FirstOrDefaultAsync(u => u.UserId == id);
+        }
+
+        public async Task<User> CreateUserAsync(User user)
+        {
+            _context.Users.Add(user);
+            await _context.SaveChangesAsync();
+            return user;
+        }
+
+        public async Task<User> UpdateUserAsync(User user)
+        {
+            _context.Entry(user).State = EntityState.Modified;
+            await _context.SaveChangesAsync();
+            return user;
+        }
+
+        public async Task<bool> DeleteUserAsync(int id)
+        {
+            var user = await _context.Users.FindAsync(id);
+            if (user == null)
+                return false;
+
+            _context.Users.Remove(user);
+            await _context.SaveChangesAsync();
+            return true;
+        }
+
+        public async Task<IEnumerable<User>> GetUsersByLobIdAsync(int lobId)
+        {
+            return await _context.Users
+                .Where(u => u.LobId == lobId)
+                .ToListAsync();
+        }
+    }
+}
+
+// Services/IAdminService.cs
+using UserManagementApi.Models;
+
+namespace UserManagementApi.Services
+{
+    public interface IAdminService
+    {
+        Task<IEnumerable<Admin>> GetAllAdminsAsync();
+        Task<Admin> GetAdminByIdAsync(int id);
+        Task<Admin> GetAdminByUserIdAsync(int userId);
+        Task<Admin> CreateAdminAsync(Admin admin);
+        Task<Admin> UpdateAdminAsync(Admin admin);
+        Task<bool> DeleteAdminAsync(int id);
+        Task<Admin> AssignSmeToAdminAsync(int adminId, int smeId);
+    }
+}
+
+// Services/AdminService.cs
+using Microsoft.EntityFrameworkCore;
+using UserManagementApi.Data;
+using UserManagementApi.Models;
+
+namespace UserManagementApi.Services
+{
+    public class AdminService : IAdminService
+    {
+        private readonly AppDbContext _context;
+
+        public AdminService(AppDbContext context)
+        {
+            _context = context;
+        }
+
+        public async Task<IEnumerable<Admin>> GetAllAdminsAsync()
+        {
+            return await _context.Admins
+                .Include(a => a.User)
+                .Include(a => a.Sme)
+                .ToListAsync();
+        }
+
+        public async Task<Admin> GetAdminByIdAsync(int id)
+        {
+            return await _context.Admins
+                .Include(a => a.User)
+                .Include(a => a.Sme)
+                .FirstOrDefaultAsync(a => a.AdminId == id);
+        }
+
+        public async Task<Admin> GetAdminByUserIdAsync(int userId)
+        {
+            return await _context.Admins
+                .Include(a => a.User)
+                .Include(a => a.Sme)
+                .FirstOrDefaultAsync(a => a.UserId == userId);
+        }
+
+        public async Task<Admin> CreateAdminAsync(Admin admin)
+        {
+            // First, ensure the user exists and update IsAdmin flag
+            var user = await _context.Users.FindAsync(admin.UserId);
+            if (user != null)
+            {
+                user.IsAdmin = true;
+                _context.Entry(user).State = EntityState.Modified;
+            }
+
+            _context.Admins.Add(admin);
+            await _context.SaveChangesAsync();
+            return admin;
+        }
+
+        public async Task<Admin> UpdateAdminAsync(Admin admin)
+        {
+            _context.Entry(admin).State = EntityState.Modified;
+            await _context.SaveChangesAsync();
+            return admin;
+        }
+
+        public async Task<bool> DeleteAdminAsync(int id)
+        {
+            var admin = await _context.Admins.FindAsync(id);
+            if (admin == null)
+                return false;
+
+            // Update the user's IsAdmin flag
+            var user = await _context.Users.FindAsync(admin.UserId);
+            if (user != null)
+            {
+                user.IsAdmin = false;
+                _context.Entry(user).State = EntityState.Modified;
+            }
+
+            _context.Admins.Remove(admin);
+            await _context.SaveChangesAsync();
+            return true;
+        }
+
+        public async Task<Admin> AssignSmeToAdminAsync(int adminId, int smeId)
+        {
+            var admin = await _context.Admins.FindAsync(adminId);
+            if (admin == null)
+                return null;
+
+            admin.SmeId = smeId;
+            await _context.SaveChangesAsync();
+            return admin;
+        }
+    }
+}
+
+// Services/ILobService.cs
+using UserManagementApi.Models;
+
+namespace UserManagementApi.Services
+{
+    public interface ILobService
+    {
+        Task<IEnumerable<Lob>> GetAllLobsAsync();
+        Task<Lob> GetLobByIdAsync(int id);
+        Task<Lob> CreateLobAsync(Lob lob);
+        Task<Lob> UpdateLobAsync(Lob lob);
+        Task<bool> DeleteLobAsync(int id);
+    }
+}
+
+// Services/LobService.cs
+using Microsoft.EntityFrameworkCore;
+using UserManagementApi.Data;
+using UserManagementApi.Models;
+
+namespace UserManagementApi.Services
+{
+    public class LobService : ILobService
+    {
+        private readonly AppDbContext _context;
+
+        public LobService(AppDbContext context)
+        {
+            _context = context;
+        }
+
+        public async Task<IEnumerable<Lob>> GetAllLobsAsync()
+        {
+            return await _context.Lobs.Include(l => l.Users).ToListAsync();
+        }
+
+        public async Task<Lob> GetLobByIdAsync(int id)
+        {
+            return await _context.Lobs.Include(l => l.Users).FirstOrDefaultAsync(l => l.LobId == id);
+        }
+
+        public async Task<Lob> CreateLobAsync(Lob lob)
+        {
+            _context.Lobs.Add(lob);
+            await _context.SaveChangesAsync();
+            return lob;
+        }
+
+        public async Task<Lob> UpdateLobAsync(Lob lob)
+        {
+            _context.Entry(lob).State = EntityState.Modified;
+            await _context.SaveChangesAsync();
+            return lob;
+        }
+
+        public async Task<bool> DeleteLobAsync(int id)
+        {
+            var lob = await _context.Lobs.FindAsync(id);
+            if (lob == null)
+                return false;
+
+            _context.Lobs.Remove(lob);
+            await _context.SaveChangesAsync();
+            return true;
+        }
+    }
+}
+
+// Services/ISmeService.cs
+using UserManagementApi.Models;
+
+namespace UserManagementApi.Services
+{
+    public interface ISmeService
+    {
+        Task<IEnumerable<Sme>> GetAllSmesAsync();
+        Task<Sme> GetSmeByIdAsync(int id);
+        Task<Sme> CreateSmeAsync(Sme sme);
+        Task<Sme> UpdateSmeAsync(Sme sme);
+        Task<bool> DeleteSmeAsync(int id);
+    }
+}
+
+// Services/SmeService.cs
+using Microsoft.EntityFrameworkCore;
+using UserManagementApi.Data;
+using UserManagementApi.Models;
+
+namespace UserManagementApi.Services
+{
+    public class SmeService : ISmeService
+    {
+        private readonly AppDbContext _context;
+        private readonly IAdminService _adminService;
+
+        public SmeService(AppDbContext context, IAdminService adminService)
+        {
+            _context = context;
+            _adminService = adminService;
+        }
+
+        public async Task<IEnumerable<Sme>> GetAllSmesAsync()
+        {
+            return await _context.Smes.Include(s => s.Admin).ThenInclude(a => a.User).ToListAsync();
+        }
+
+        public async Task<Sme> GetSmeByIdAsync(int id)
+        {
+            return await _context.Smes
+                .Include(s => s.Admin)
+                .ThenInclude(a => a.User)
+                .FirstOrDefaultAsync(s => s.SmeId == id);
+        }
+
+        public async Task<Sme> CreateSmeAsync(Sme sme)
+        {
+            // Check if the admin exists
+            var admin = await _context.Admins.FindAsync(sme.AdminId);
+            if (admin == null)
+                return null;
+
+            // Add the SME
+            _context.Smes.Add(sme);
+            await _context.SaveChangesAsync();
+
+            // Update the admin to reference this SME
+            await _adminService.AssignSmeToAdminAsync(admin.AdminId, sme.SmeId);
+
+            return sme;
+        }
+
+        public async Task<Sme> UpdateSmeAsync(Sme sme)
+        {
+            _context.Entry(sme).State = EntityState.Modified;
+            await _context.SaveChangesAsync();
+            return sme;
+        }
+
+        public async Task<bool> DeleteSmeAsync(int id)
+        {
+            var sme = await _context.Smes.FindAsync(id);
+            if (sme == null)
+                return false;
+
+            // Update admin to remove reference to this SME
+            var admin = await _context.Admins.FindAsync(sme.AdminId);
+            if (admin != null)
+            {
+                admin.SmeId = null;
+                _context.Entry(admin).State = EntityState.Modified;
+            }
+
+            _context.Smes.Remove(sme);
+            await _context.SaveChangesAsync();
+            return true;
+        }
+    }
+}
+
+
+----------------------------------------------------------------------------
+
+
+// Controllers/UsersController.cs
+using Microsoft.AspNetCore.Mvc;
+using UserManagementApi.Models;
+using UserManagementApi.Services;
+
+namespace UserManagementApi.Controllers
+{
+    [ApiController]
+    [Route("api/[controller]")]
+    public class UsersController : ControllerBase
+    {
+        private readonly IUserService _userService;
+
+        public UsersController(IUserService userService)
+        {
+            _userService = userService;
+        }
+
+        [HttpGet]
+        public async Task<ActionResult<IEnumerable<User>>> GetUsers()
+        {
+            var users = await _userService.GetAllUsersAsync();
+            return Ok(users);
+        }
+
+        [HttpGet("{id}")]
+        public async Task<ActionResult<User>> GetUser(int id)
+        {
+            var user = await _userService.GetUserByIdAsync(id);
+            if (user == null)
+                return NotFound();
+
+            return Ok(user);
+        }
+
+        [HttpPost]
+        public async Task<ActionResult<User>> CreateUser(User user)
+        {
+            var createdUser = await _userService.CreateUserAsync(user);
+            return CreatedAtAction(nameof(GetUser), new { id = createdUser.UserId }, createdUser);
+        }
+
+        [HttpPut("{id}")]
+        public async Task<IActionResult> UpdateUser(int id, User user)
+        {
+            if (id != user.UserId)
+                return BadRequest();
+
+            var updatedUser = await _userService.UpdateUserAsync(user);
+            return Ok(updatedUser);
+        }
+
+        [HttpDelete("{id}")]
+        public async Task<IActionResult> DeleteUser(int id)
+        {
+            var result = await _userService.DeleteUserAsync(id);
+            if (!result)
+                return NotFound();
+
+            return NoContent();
+        }
+
+        [HttpGet("bylob/{lobId}")]
+        public async Task<ActionResult<IEnumerable<User>>> GetUsersByLob(int lobId)
+        {
+            var users = await _userService.GetUsersByLobIdAsync(lobId);
+            return Ok(users);
+        }
+    }
+
+    // Controllers/AdminsController.cs
+    [ApiController]
+    [Route("api/[controller]")]
+    public class AdminsController : ControllerBase
+    {
+        private readonly IAdminService _adminService;
+
+        public AdminsController(IAdminService adminService)
+        {
+            _adminService = adminService;
+        }
+
+        [HttpGet]
+        public async Task<ActionResult<IEnumerable<Admin>>> GetAdmins()
+        {
+            var admins = await _adminService.GetAllAdminsAsync();
+            return Ok(admins);
+        }
+
+        [HttpGet("{id}")]
+        public async Task<ActionResult<Admin>> GetAdmin(int id)
+        {
+            var admin = await _adminService.GetAdminByIdAsync(id);
+            if (admin == null)
+                return NotFound();
+
+            return Ok(admin);
+        }
+
+        [HttpGet("byuser/{userId}")]
+        public async Task<ActionResult<Admin>> GetAdminByUserId(int userId)
+        {
+            var admin = await _adminService.GetAdminByUserIdAsync(userId);
+            if (admin == null)
+                return NotFound();
+
+            return Ok(admin);
+        }
+
+        [HttpPost]
+        public async Task<ActionResult<Admin>> CreateAdmin(Admin admin)
+        {
+            var createdAdmin = await _adminService.CreateAdminAsync(admin);
+            return CreatedAtAction(nameof(GetAdmin), new { id = createdAdmin.AdminId }, createdAdmin);
+        }
+
+        [HttpPut("{id}")]
+        public async Task<IActionResult> UpdateAdmin(int id, Admin admin)
+        {
+            if (id != admin.AdminId)
+                return BadRequest();
+
+            var updatedAdmin = await _adminService.UpdateAdminAsync(admin);
+            return Ok(updatedAdmin);
+        }
+
+        [HttpDelete("{id}")]
+        public async Task<IActionResult> DeleteAdmin(int id)
+        {
+            var result = await _adminService.DeleteAdminAsync(id);
+            if (!result)
+                return NotFound();
+
+            return NoContent();
+        }
+
+        [HttpPut("{adminId}/assignsme/{smeId}")]
+        public async Task<IActionResult> AssignSmeToAdmin(int adminId, int smeId)
+        {
+            var admin = await _adminService.AssignSmeToAdminAsync(adminId, smeId);
+            if (admin == null)
+                return NotFound();
+
+            return Ok(admin);
+        }
+    }
+
+    // Controllers/LobsController.cs
+    [ApiController]
+    [Route("api/[controller]")]
+    public class LobsController : ControllerBase
+    {
+        private readonly ILobService _lobService;
+
+        public LobsController(ILobService lobService)
+        {
+            _lobService = lobService;
+        }
+
+        [HttpGet]
+        public async Task<ActionResult<IEnumerable<Lob>>> GetLobs()
+        {
+            var lobs = await _lobService.GetAllLobsAsync();
+            return Ok(lobs);
+        }
+
+        [HttpGet("{id}")]
+        public async Task<ActionResult<Lob>> GetLob(int id)
+        {
+            var lob = await _lobService.GetLobByIdAsync(id);
+            if (lob == null)
+                return NotFound();
+
+            return Ok(lob);
+        }
+
+        [HttpPost]
+        public async Task<ActionResult<Lob>> CreateLob(Lob lob)
+        {
+            var createdLob = await _lobService.CreateLobAsync(lob);
+            return CreatedAtAction(nameof(GetLob), new { id = createdLob.LobId }, createdLob);
+        }
+
+        [HttpPut("{id}")]
+        public async Task<IActionResult> UpdateLob(int id, Lob lob)
+        {
+            if (id != lob.LobId)
+                return BadRequest();
+
+            var updatedLob = await _lobService.UpdateLobAsync(lob);
+            return Ok(updatedLob);
+        }
+
+        [HttpDelete("{id}")]
+        public async Task<IActionResult> DeleteLob(int id)
+        {
+            var result = await _lobService.DeleteLobAsync(id);
+            if (!result)
+                return NotFound();
+
+            return NoContent();
+        }
+    }
+
+    // Controllers/SmesController.cs
+    [ApiController]
+    [Route("api/[controller]")]
+    public class SmesController : ControllerBase
+    {
+        private readonly ISmeService _smeService;
+
+        public SmesController(ISmeService smeService)
+        {
+            _smeService = smeService;
+        }
+
+        [HttpGet]
+        public async Task<ActionResult<IEnumerable<Sme>>> GetSmes()
+        {
+            var smes = await _smeService.GetAllSmesAsync();
+            return Ok(smes);
+        }
+
+        [HttpGet("{id}")]
+        public async Task<ActionResult<Sme>> GetSme(int id)
+        {
+            var sme = await _smeService.GetSmeByIdAsync(id);
+            if (sme == null)
+                return NotFound();
+
+            return Ok(sme);
+        }
+
+        [HttpPost]
+        public async Task<ActionResult<Sme>> CreateSme(Sme sme)
+        {
+            var createdSme = await _smeService.CreateSmeAsync(sme);
+            if (createdSme == null)
+                return BadRequest("The specified AdminId does not exist or is invalid.");
+
+            return CreatedAtAction(nameof(GetSme), new { id = createdSme.SmeId }, createdSme);
+        }
+
+        [HttpPut("{id}")]
+        public async Task<IActionResult> UpdateSme(int id, Sme sme)
+        {
+            if (id != sme.SmeId)
+                return BadRequest();
+
+            var updatedSme = await _smeService.UpdateSmeAsync(sme);
+            return Ok(updatedSme);
+        }
+
+        [HttpDelete("{id}")]
+        public async Task<IActionResult> DeleteSme(int id)
+        {
+            var result = await _smeService.DeleteSmeAsync(id);
+            if (!result)
+                return NotFound();
+
+            return NoContent();
+        }
+    }
+}
+
+
+------------------------------------------------------------------------------------
